@@ -1,0 +1,28 @@
+# Python
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 项目特定
+data/                    # 知识库文件
+volumes/                 # Milvus 数据卷
+docker-composebk.yml     # 备份文件
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
