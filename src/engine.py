@@ -15,8 +15,33 @@ from src.config import (
     MILVUS_URI, COLLECTION_NAME,
     LLM_MODEL_PATH, EMBEDDING_MODEL_PATH,
     LLM_TYPE, OPENAI_API_KEY, OPENAI_MODEL,
-    ANTHROPIC_API_KEY, ANTHROPIC_MODEL, ANTHROPIC_BASE_URL
+    ANTHROPIC_API_KEY, ANTHROPIC_MODEL, ANTHROPIC_BASE_URL,
+    ENABLE_HYDE, ENABLE_QUERY_EXPANSION,
+    EXPANSION_COUNT, RETRIEVAL_K
 )
+
+# ==================== 动态配置 ====================
+# 这些变量可以在运行时修改
+_enable_hyde = ENABLE_HYDE
+_enable_query_expansion = ENABLE_QUERY_EXPANSION
+
+def get_rag_config():
+    """获取当前 RAG 配置"""
+    return {
+        "enable_hyde": _enable_hyde,
+        "enable_query_expansion": _enable_query_expansion,
+        "expansion_count": EXPANSION_COUNT,
+        "retrieval_k": RETRIEVAL_K
+    }
+
+def set_rag_config(enable_hyde: bool = None, enable_query_expansion: bool = None):
+    """动态修改 RAG 配置"""
+    global _enable_hyde, _enable_query_expansion
+    if enable_hyde is not None:
+        _enable_hyde = enable_hyde
+    if enable_query_expansion is not None:
+        _enable_query_expansion = enable_query_expansion
+    return get_rag_config()
 
 class RAGEngine:
     def __init__(self):
@@ -67,7 +92,7 @@ class RAGEngine:
         """
         prompt = PromptTemplate.from_template(template)
         
-        self.retriever = self.vector_store.as_retriever(search_kwargs={"k": 2})
+        self.retriever = self.vector_store.as_retriever(search_kwargs={"k": RETRIEVAL_K})
         
         def format_docs(docs):
             return "\n\n".join(doc.page_content for doc in docs)
@@ -79,7 +104,7 @@ class RAGEngine:
             | StrOutputParser()
         )
         
-        self.retriever_with_sources = self.vector_store.as_retriever(search_kwargs={"k": 3})
+        self.retriever_with_sources = self.vector_store.as_retriever(search_kwargs={"k": RETRIEVAL_K})
 
         print(">>> ✅ RAG 引擎初始化完成！")
 
@@ -117,16 +142,116 @@ class RAGEngine:
         sorted_docs = sorted(doc_scores.values(), key=lambda x: x["score"], reverse=True)
         return [item["doc"] for item in sorted_docs]
 
-    def hybrid_search(self, query: str, k: int = 5):
-        """混合检索：向量 + BM25"""
-        # 向量检索
+    def _extract_text(self, result) -> str:
+        """从 LLM 返回结果中提取文本"""
+        if hasattr(result, 'content'):
+            content = result.content
+            if isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict):
+                        if item.get('type') == 'text':
+                            return item.get('text', '')
+            elif isinstance(content, str):
+                return content
+        return str(result)
+
+    def _generate_hypothetical_doc(self, question: str) -> str:
+        """生成假设文档 (HyDE)"""
+        prompt = f"""请根据问题生成一个可能包含答案的假设文档片段。
+要求：直接给出假设文档内容，不要有任何前缀解释。问题越简洁越好。
+
+问题：{question}
+假设文档："""
+        try:
+            result = self.llm.invoke(prompt)
+            return self._extract_text(result)
+        except Exception as e:
+            print(f"    ⚠️ HyDE 生成失败: {e}")
+            return ""
+
+    def _expand_query(self, question: str, num_expansions: int = None) -> list[str]:
+        """生成同义查询 (查询扩展)"""
+        if num_expansions is None:
+            num_expansions = EXPANSION_COUNT
+
+        prompt = f"""生成 {num_expansions} 个与以下问题意思相同但表述不同的问法。
+要求：
+1. 每行一个问法，不要有编号或前缀
+2. 直接返回问法列表，不要有任何解释
+
+原始问题：{question}
+同义问法："""
+        try:
+            result = self.llm.invoke(prompt)
+            expanded = self._extract_text(result).strip().split('\n')
+            # 过滤空行并返回
+            expanded = [q.strip() for q in expanded if q.strip()]
+            return [question] + expanded[:num_expansions]
+        except Exception as e:
+            print(f"    ⚠️ 查询扩展失败: {e}")
+            return [question]
+
+    def _hyde_search(self, question: str, k: int) -> list:
+        """使用 HyDE 进行检索"""
+        hypothetical_doc = self._generate_hypothetical_doc(question)
+        if hypothetical_doc:
+            print(f"    📝 HyDE 假设文档: {hypothetical_doc[:100]}...")
+            return self.vector_store.similarity_search(hypothetical_doc, k=k)
+        return []
+
+    def _expanded_search(self, question: str, k: int) -> list:
+        """使用查询扩展进行检索"""
+        expanded_queries = self._expand_query(question)
+        if len(expanded_queries) > 1:
+            print(f"    🔍 扩展查询: {expanded_queries}")
+
+        all_results = []
+        for query in expanded_queries:
+            results = self.vector_store.similarity_search(query, k=k)
+            all_results.append(results)
+
+        # 合并所有结果
+        merged = []
+        seen = set()
+        for results in all_results:
+            for doc in results:
+                key = doc.page_content
+                if key not in seen:
+                    seen.add(key)
+                    merged.append(doc)
+        return merged
+
+    def hybrid_search(self, query: str, k: int = None):
+        """混合检索：向量 + BM25 + HyDE + 查询扩展"""
+        if k is None:
+            k = RETRIEVAL_K
+
+        print(f">>> 开始检索 (HyDE={_enable_hyde}, 扩展={_enable_query_expansion})")
+
+        all_results = []
+
+        # 1. 基础向量检索
         vector_results = self.vector_store.similarity_search(query, k=k)
+        all_results.append(vector_results)
 
-        # BM25 检索
+        # 2. BM25 检索
         bm25_results = self._bm25_search(query, k=k)
+        all_results.append(bm25_results)
 
-        # RRF 融合
-        fused_results = self._rrf_fusion([vector_results, bm25_results], k=60)
+        # 3. HyDE 检索 (如果启用)
+        if _enable_hyde:
+            hyde_results = self._hyde_search(query, k)
+            if hyde_results:
+                all_results.append(hyde_results)
+
+        # 4. 查询扩展检索 (如果启用)
+        if _enable_query_expansion:
+            expanded_results = self._expanded_search(query, k)
+            if expanded_results:
+                all_results.append(expanded_results)
+
+        # RRF 融合所有结果
+        fused_results = self._rrf_fusion(all_results, k=60)
 
         return fused_results[:k]
 
@@ -192,7 +317,7 @@ class RAGEngine:
 
         # 计时：混合检索
         start_retrieval = time.time()
-        docs = self.hybrid_search(question, k=5)
+        docs = self.hybrid_search(question)
         retrieval_time = time.time() - start_retrieval
 
         # 构建 context

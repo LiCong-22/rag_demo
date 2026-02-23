@@ -26,3 +26,16 @@ COLLECTION_NAME = "auto_elec_knowledge"
 # ==================== 路径配置 ====================
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_PATH = os.path.join(BASE_DIR, "data")
+
+# ==================== RAG 增强配置 ====================
+# HyDE: 生成假设文档辅助检索 (会额外调用一次 LLM，增加延迟)
+ENABLE_HYDE = True
+
+# 查询扩展: 用 LLM 生成同义问题增加召回率 (会额外调用一次 LLM)
+ENABLE_QUERY_EXPANSION = True
+
+# 查询扩展数量
+EXPANSION_COUNT = 3
+
+# 检索数量 (增大以容纳更多检索结果)
+RETRIEVAL_K = 8

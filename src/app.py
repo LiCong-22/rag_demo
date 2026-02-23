@@ -53,19 +53,60 @@ st.markdown("""
 # ==================== 侧边栏配置 ====================
 with st.sidebar:
     st.header("⚙️ 系统设置")
-    
+
     # API 配置
     API_URL = st.text_input("API 地址", value="http://localhost:8000")
-    
+
     # 检索参数
     st.subheader("🔍 检索配置")
     top_k = st.slider("检索文档数量", 1, 10, 3)
-    
+
+    # RAG 增强配置
+    st.subheader("🔧 RAG 增强")
+
+    # 初始化 session state
+    if "rag_config" not in st.session_state:
+        st.session_state.rag_config = {"enable_hyde": True, "enable_query_expansion": True}
+
+    # 尝试获取服务器配置
+    try:
+        config_response = requests.get(f"{API_URL}/config", timeout=5)
+        if config_response.status_code == 200:
+            st.session_state.rag_config = config_response.json()
+    except:
+        pass
+
+    # HyDE 开关
+    enable_hyde = st.checkbox(
+        "启用 HyDE",
+        value=st.session_state.rag_config.get("enable_hyde", True),
+        help="生成假设文档辅助检索，可提升召回率（会增加延迟）"
+    )
+
+    # 查询扩展开关
+    enable_query_expansion = st.checkbox(
+        "启用查询扩展",
+        value=st.session_state.rag_config.get("enable_query_expansion", True),
+        help="生成同义问题增加召回率（会增加延迟）"
+    )
+
+    # 配置变更时同步到服务器
+    if enable_hyde != st.session_state.rag_config.get("enable_hyde") or enable_query_expansion != st.session_state.rag_config.get("enable_query_expansion"):
+        try:
+            requests.post(
+                f"{API_URL}/config",
+                json={"enable_hyde": enable_hyde, "enable_query_expansion": enable_query_expansion},
+                timeout=5
+            )
+            st.session_state.rag_config = {"enable_hyde": enable_hyde, "enable_query_expansion": enable_query_expansion}
+        except Exception as e:
+            st.warning(f"配置同步失败: {e}")
+
     # 清空对话
     if st.button("🗑️ 清空对话历史"):
         st.session_state.messages = []
         st.rerun()
-    
+
     # 系统信息
     st.divider()
     st.info("""
