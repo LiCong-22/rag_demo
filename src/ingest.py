@@ -3,15 +3,16 @@ import os
 import uuid
 import re
 from typing import List, Dict, Any
-from langchain_community.document_loaders import TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
 from langchain_milvus import Milvus
 from langchain_huggingface import HuggingFaceEmbeddings
 from src.config import (
     MILVUS_URI, COLLECTION_NAME, DATA_PATH, EMBEDDING_MODEL_PATH,
-    CHUNK_SIZE, CHUNK_OVERLAP, PARENT_CHUNK_SIZE, ENABLE_PARENT_CHILD
+    CHUNK_SIZE, CHUNK_OVERLAP, PARENT_CHUNK_SIZE, ENABLE_PARENT_CHILD,
+    DATA_SOURCE
 )
+from src.loaders import load_all_docs
 
 def split_with_parent_child(documents: List[Document]) -> List[Document]:
     """
@@ -120,25 +121,8 @@ def extract_title(text: str) -> str:
 def run_ingestion():
     print(">>> 开始加载文档...")
 
-    if not os.path.exists(DATA_PATH):
-        print(f"❌ 数据目录不存在：{DATA_PATH}")
-        return
-
-    docs = []
-    for root, dirs, files in os.walk(DATA_PATH):
-        for file in files:
-            if file.endswith(('.md', '.txt')):
-                file_path = os.path.join(root, file)
-                try:
-                    loader = TextLoader(file_path, encoding='utf-8')
-                    loaded_docs = loader.load()
-                    # 添加source元数据
-                    for d in loaded_docs:
-                        d.metadata["source"] = file
-                    docs.extend(loaded_docs)
-                    print(f"  ✓ 加载：{file}")
-                except Exception as e:
-                    print(f"  ⚠️ 跳过 {file}: {e}")
+    # 使用可扩展的加载器架构
+    docs = load_all_docs(DATA_SOURCE)
 
     if len(docs) == 0:
         print("❌ 未加载到任何文档")

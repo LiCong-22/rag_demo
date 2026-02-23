@@ -6,6 +6,8 @@ langchain-huggingface==0.1.0
 langchain-openai>=0.1.0
 langchain-anthropic>=0.1.0
 
+atlassian-python-api>=3.0.0
+
 transformers==4.46.0
 torch==2.5.0
 torchvision==0.20.0

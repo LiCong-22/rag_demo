@@ -25,7 +25,22 @@ COLLECTION_NAME = "auto_elec_knowledge"
 
 # ==================== 路径配置 ====================
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# ==================== 数据源配置 ====================
+# 数据源类型: "local", "confluence", "all"
+# - "all": 同时加载本地文件和 Confluence（推荐）
+# - "local": 只加载本地文件
+# - "confluence": 只加载 Confluence
+DATA_SOURCE = "all"
+
+# ==================== 本地文件配置 ====================
 DATA_PATH = os.path.join(BASE_DIR, "data")
+
+# ==================== Confluence 配置 ====================
+CONFLUENCE_URL = os.getenv("CONFLUENCE_URL", "")
+CONFLUENCE_USERNAME = os.getenv("CONFLUENCE_USERNAME", "")
+CONFLUENCE_API_KEY = os.getenv("CONFLUENCE_API_KEY", "")
+CONFLUENCE_SPACE_KEY = os.getenv("CONFLUENCE_SPACE_KEY", "")
 
 # ==================== 分块配置 ====================
 # 子块大小 (段落级，用于精准检索)
