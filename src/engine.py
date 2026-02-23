@@ -17,7 +17,8 @@ from src.config import (
     LLM_TYPE, OPENAI_API_KEY, OPENAI_MODEL,
     ANTHROPIC_API_KEY, ANTHROPIC_MODEL, ANTHROPIC_BASE_URL,
     ENABLE_HYDE, ENABLE_QUERY_EXPANSION,
-    EXPANSION_COUNT, RETRIEVAL_K
+    EXPANSION_COUNT, RETRIEVAL_K,
+    ENABLE_PARENT_CHILD
 )
 
 # ==================== 动态配置 ====================
@@ -61,6 +62,11 @@ class RAGEngine:
 
         print(">>> [3/4] 初始化 BM25 检索器...")
         self._init_bm25()
+
+        # 初始化父子分块映射
+        if ENABLE_PARENT_CHILD:
+            print(">>> [3.5/4] 初始化父子分块索引...")
+            self._init_parent_child_index()
 
         print(f">>> [4/4] 加载 LLM 模型 ({LLM_TYPE})...")
 
@@ -119,6 +125,71 @@ class RAGEngine:
         tokenized_corpus = [list(jieba.cut(doc)) for doc in self.bm25_corpus]
         self.bm25 = BM25Okapi(tokenized_corpus)
         print(f"    BM25 索引构建完成，共 {len(self.bm25_corpus)} 个文档")
+
+    def _init_parent_child_index(self):
+        """初始化父子分块索引，构建 chunk_id -> 父块 的映射"""
+        if not ENABLE_PARENT_CHILD:
+            return
+
+        print("    构建父子分块映射...")
+        # 获取所有文档
+        all_docs = self.vector_store.similarity_search("", k=16384)
+
+        # 构建映射
+        # chunk_id -> Document
+        self.chunk_map = {}
+        # parent_id -> Document (父块)
+        self.parent_map = {}
+
+        for doc in all_docs:
+            chunk_id = doc.metadata.get("chunk_id")
+            parent_id = doc.metadata.get("parent_id")
+            level = doc.metadata.get("level", "parent")
+
+            if chunk_id:
+                self.chunk_map[chunk_id] = doc
+
+                # 如果是父块，建立 parent_id -> doc 映射
+                if level == "parent" or not parent_id:
+                    self.parent_map[chunk_id] = doc
+
+        print(f"    父子分块索引构建完成: {len(self.chunk_map)} 个块, {len(self.parent_map)} 个父块")
+
+    def _resolve_parent_child(self, docs: list) -> list:
+        """
+        解析父子块关系：
+        - 如果检索到子块，替换为对应的父块
+        - 如果检索到父块，直接返回
+        """
+        if not ENABLE_PARENT_CHILD:
+            return docs
+
+        resolved_docs = []
+        seen_content = set()
+
+        for doc in docs:
+            chunk_id = doc.metadata.get("chunk_id")
+            parent_id = doc.metadata.get("parent_id")
+            level = doc.metadata.get("level", "parent")
+
+            # 如果是子块，尝试获取父块
+            if level == "child" and parent_id:
+                # 尝试通过 parent_id 找到父块
+                parent_doc = self.parent_map.get(parent_id)
+                if parent_doc:
+                    content = parent_doc.page_content
+                    if content not in seen_content:
+                        resolved_docs.append(parent_doc)
+                        seen_content.add(content)
+                    continue
+
+            # 如果是父块或找不到父块，直接使用原块
+            content = doc.page_content
+            if content not in seen_content:
+                resolved_docs.append(doc)
+                seen_content.add(content)
+
+        return resolved_docs
 
     def _bm25_search(self, query: str, k: int = 5):
         """BM25 关键词检索"""
@@ -252,6 +323,10 @@ class RAGEngine:
 
         # RRF 融合所有结果
         fused_results = self._rrf_fusion(all_results, k=60)
+
+        # 父子块解析：如果检索到子块，替换为父块
+        if ENABLE_PARENT_CHILD:
+            fused_results = self._resolve_parent_child(fused_results)
 
         return fused_results[:k]
 

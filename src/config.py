@@ -27,6 +27,16 @@ COLLECTION_NAME = "auto_elec_knowledge"
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_PATH = os.path.join(BASE_DIR, "data")
 
+# ==================== 分块配置 ====================
+# 子块大小 (段落级，用于精准检索)
+CHUNK_SIZE = 400
+# 子块重叠
+CHUNK_OVERLAP = 50
+# 父块大小 (章节级，用于提供完整上下文)
+PARENT_CHUNK_SIZE = 800
+# 启用父子分块
+ENABLE_PARENT_CHILD = True
+
 # ==================== RAG 增强配置 ====================
 # HyDE: 生成假设文档辅助检索 (会额外调用一次 LLM，增加延迟)
 ENABLE_HYDE = True
