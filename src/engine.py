@@ -1,6 +1,7 @@
 # src/engine.py
 import torch
 import time
+import numpy as np
 from langchain_milvus import Milvus
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.llms import HuggingFacePipeline
@@ -8,6 +9,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline, BitsAndB
 from langchain_core.prompts import PromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
+from rank_bm25 import BM25Okapi
+import jieba
 from src.config import (
     MILVUS_URI, COLLECTION_NAME,
     LLM_MODEL_PATH, EMBEDDING_MODEL_PATH,
@@ -17,21 +20,24 @@ from src.config import (
 
 class RAGEngine:
     def __init__(self):
-        print(">>> [1/3] 初始化 Embedding 模型...")
+        print(">>> [1/4] 初始化 Embedding 模型...")
         self.embeddings = HuggingFaceEmbeddings(
             model_name=EMBEDDING_MODEL_PATH,
             model_kwargs={'device': 'cuda'},
             encode_kwargs={'normalize_embeddings': True}
         )
-        
-        print(">>> [2/3] 连接 Milvus...")
+
+        print(">>> [2/4] 连接 Milvus...")
         self.vector_store = Milvus(
             embedding_function=self.embeddings,
             connection_args={"uri": MILVUS_URI},
             collection_name=COLLECTION_NAME,
         )
 
-        print(f">>> [3/3] 加载 LLM 模型 ({LLM_TYPE})...")
+        print(">>> [3/4] 初始化 BM25 检索器...")
+        self._init_bm25()
+
+        print(f">>> [4/4] 加载 LLM 模型 ({LLM_TYPE})...")
 
         # 根据 LLM_TYPE 选择不同的初始化方式
         if LLM_TYPE == "local":
@@ -74,8 +80,55 @@ class RAGEngine:
         )
         
         self.retriever_with_sources = self.vector_store.as_retriever(search_kwargs={"k": 3})
-        
+
         print(">>> ✅ RAG 引擎初始化完成！")
+
+    def _init_bm25(self):
+        """初始化 BM25 检索器"""
+        # 从 Milvus 获取所有文档用于构建 BM25 索引
+        all_docs = self.vector_store.similarity_search("", k=10000)
+        self.bm25_corpus = [doc.page_content for doc in all_docs]
+        self.bm25_docs = all_docs  # 保留原始文档引用
+
+        # 中文分词
+        tokenized_corpus = [list(jieba.cut(doc)) for doc in self.bm25_corpus]
+        self.bm25 = BM25Okapi(tokenized_corpus)
+        print(f"    BM25 索引构建完成，共 {len(self.bm25_corpus)} 个文档")
+
+    def _bm25_search(self, query: str, k: int = 5):
+        """BM25 关键词检索"""
+        tokenized_query = list(jieba.cut(query))
+        scores = self.bm25.get_scores(tokenized_query)
+        top_indices = np.argsort(scores)[::-1][:k]
+        return [self.bm25_docs[i] for i in top_indices if scores[i] > 0]
+
+    def _rrf_fusion(self, results_list: list, k: int = 60):
+        """RRF (Reciprocal Rank Fusion) 混合检索算法"""
+        doc_scores = {}
+
+        for results in results_list:
+            for rank, doc in enumerate(results):
+                doc_key = doc.page_content
+                if doc_key not in doc_scores:
+                    doc_scores[doc_key] = {"doc": doc, "score": 0}
+                doc_scores[doc_key]["score"] += 1.0 / (k + rank + 1)
+
+        # 按分数排序
+        sorted_docs = sorted(doc_scores.values(), key=lambda x: x["score"], reverse=True)
+        return [item["doc"] for item in sorted_docs]
+
+    def hybrid_search(self, query: str, k: int = 5):
+        """混合检索：向量 + BM25"""
+        # 向量检索
+        vector_results = self.vector_store.similarity_search(query, k=k)
+
+        # BM25 检索
+        bm25_results = self._bm25_search(query, k=k)
+
+        # RRF 融合
+        fused_results = self._rrf_fusion([vector_results, bm25_results], k=60)
+
+        return fused_results[:k]
 
     def _init_local_llm(self):
         """初始化本地 HuggingFace 模型"""
@@ -137,14 +190,17 @@ class RAGEngine:
         start_total = time.time()
         print(f">>> 正在处理：{question}")
 
-        # 计时：向量检索
+        # 计时：混合检索
         start_retrieval = time.time()
-        docs = self.retriever_with_sources.invoke(question)
+        docs = self.hybrid_search(question, k=5)
         retrieval_time = time.time() - start_retrieval
+
+        # 构建 context
+        context = "\n\n".join(doc.page_content for doc in docs)
 
         # 计时：LLM 生成
         start_llm = time.time()
-        answer = self.rag_chain.invoke(question)
+        answer = self.llm.invoke(f"已知信息：\n{context}\n\n用户问题：{question}\n\n回答：")
         llm_time = time.time() - start_llm
 
         total_time = time.time() - start_total
@@ -153,8 +209,48 @@ class RAGEngine:
         print(f">>> LLM 生成耗时: {llm_time:.2f}s")
         print(f">>> 总耗时: {total_time:.2f}s")
 
+        # 处理 LLM 返回值
+        answer_text = ""
+        thinking_text = ""
+
+        try:
+            if hasattr(answer, 'content'):
+                content = answer.content
+                # 处理 MiniMax/Claude 的思考模型返回格式 (list with type field)
+                if isinstance(content, list) and len(content) > 0:
+                    for item in content:
+                        if isinstance(item, dict):
+                            item_type = item.get('type', '')
+                            if item_type == 'text':
+                                answer_text = item.get('text', '')
+                            elif item_type == 'thinking':
+                                thinking_text = item.get('thinking', '')
+                            elif item_type == 'output':
+                                # 有时是 output 字段
+                                answer_text = item.get('text', item.get('output', str(item)))
+                            else:
+                                # 普通模型可能返回其他格式，尝试直接提取
+                                answer_text = str(item)
+                        else:
+                            answer_text = str(item)
+                elif isinstance(content, str):
+                    # 普通字符串格式 (如本地模型)
+                    answer_text = content
+                elif content is not None:
+                    # 其他格式
+                    answer_text = str(content)
+            elif isinstance(answer, str):
+                # 直接是字符串
+                answer_text = answer
+            else:
+                answer_text = str(answer)
+        except Exception as e:
+            print(f"⚠️ 解析回答时出错: {e}")
+            answer_text = str(answer)
+
         return {
-            "answer": answer,
+            "answer": answer_text,
+            "thinking": thinking_text,
             "sources": [doc.page_content for doc in docs]
         }
 

@@ -88,8 +88,13 @@ if "messages" not in st.session_state:
 # 显示历史消息
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
+        # 如果是助手消息，显示思考过程
+        if message["role"] == "assistant" and message.get("thinking"):
+            with st.expander("💭 查看思考过程", expanded=False):
+                st.markdown(message["thinking"])
+
         st.markdown(message["content"])
-        
+
         # 如果是助手消息，显示来源
         if message["role"] == "assistant" and "sources" in message:
             with st.expander("📚 查看参考来源", expanded=False):
@@ -121,22 +126,29 @@ if prompt := st.chat_input("请输入您的问题，例如：ESP 初始化失败
                 if response.status_code == 200:
                     result = response.json()
                     answer = result["answer"]
+                    thinking = result.get("thinking", "")
                     sources = result.get("sources", [])
-                    
+
+                    # 显示思考过程（可折叠）
+                    if thinking:
+                        with st.expander("💭 查看思考过程", expanded=False):
+                            st.markdown(thinking)
+
                     # 显示答案
                     message_placeholder.markdown(answer)
-                    
+
                     # 显示来源
                     if sources:
                         with st.expander("📚 查看参考来源", expanded=True):
                             for i, source in enumerate(sources, 1):
                                 st.markdown(f"**来源 {i}:**")
                                 st.markdown(f"> {source[:500]}..." if len(source) > 500 else f"> {source}")
-                    
+
                     # 保存到会话
                     st.session_state.messages.append({
                         "role": "assistant",
                         "content": answer,
+                        "thinking": thinking,
                         "sources": sources
                     })
                     
