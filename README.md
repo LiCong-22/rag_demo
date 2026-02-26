@@ -126,7 +126,7 @@ python -m src.ingest
 python -m src.api
 
 # 终端 2：启动 UI
-python -m src.app
+streamlit run src\app.py
 ```
 
 访问 http://localhost:8501
@@ -151,3 +151,4 @@ Streamlit UI → FastAPI → RAG Engine → Milvus → 文档数据
 
 - `.md` (Markdown)
 - `.txt` (纯文本)
+
