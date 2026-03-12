@@ -2,6 +2,7 @@
 import os
 import uuid
 import re
+import time
 from typing import List, Dict, Any
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
@@ -13,6 +14,19 @@ from src.config import (
     DATA_SOURCE
 )
 from src.loaders import load_all_docs
+
+# 计时装饰器
+def timer(name: str):
+    """计时装饰器"""
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            start = time.time()
+            print(f"\n[⏱️] {name} 开始...")
+            result = func(*args, **kwargs)
+            print(f"[⏱️] {name} 完成，耗时: {time.time() - start:.2f}秒")
+            return result
+        return wrapper
+    return decorator
 
 def split_with_parent_child(documents: List[Document]) -> List[Document]:
     """
@@ -119,40 +133,55 @@ def extract_title(text: str) -> str:
 
 
 def run_ingestion():
-    print(">>> 开始加载文档...")
+    total_start = time.time()
 
-    # 使用可扩展的加载器架构
+    # 1. 加载文档
+    print("\n" + "="*50)
+    print("[1/4] 加载文档...")
     docs = load_all_docs(DATA_SOURCE)
+    print(f"    共加载 {len(docs)} 个文档")
 
     if len(docs) == 0:
         print("❌ 未加载到任何文档")
         return
 
-    print(f">>> 共加载 {len(docs)} 个文档")
-
-    # 根据配置选择分块策略
+    # 2. 分块处理
+    print("\n" + "="*50)
+    print("[2/4] 分块处理...")
+    chunk_start = time.time()
     if ENABLE_PARENT_CHILD:
         splits = split_with_parent_child(docs)
     else:
         # 传统固定大小分块
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
         splits = text_splitter.split_documents(docs)
-        print(f">>> 分块后得到 {len(splits)} 个向量块")
+    print(f"    获得 {len(splits)} 个块，耗时: {time.time() - chunk_start:.2f}秒")
 
-    # 初始化 Embedding (本地加载)
-    print(">>> 加载 Embedding 模型...")
+    # 3. 加载模型 & 连接 Milvus
+    print("\n" + "="*50)
+    print("[3/4] 加载模型 & 连接 Milvus...")
+    model_start = time.time()
     embeddings = HuggingFaceEmbeddings(
         model_name=EMBEDDING_MODEL_PATH,
         model_kwargs={'device': 'cuda'},
         encode_kwargs={'normalize_embeddings': True}
     )
+    print(f"    模型加载耗时: {time.time() - model_start:.2f}秒")
 
     # 测试 Milvus 连接
-    print(">>> 测试 Milvus 连接...")
+    milvus_start = time.time()
     try:
         from pymilvus import connections, utility
-        connections.connect(uri=MILVUS_URI)
-        print("✅ Milvus 连接成功")
+        # 使用 host/port 方式连接，避免异步问题
+        milvus_host = "localhost"
+        milvus_port = "19530"
+        if "://" in MILVUS_URI:
+            # 处理 milvus://host:port 格式
+            uri_parts = MILVUS_URI.split("://")[1].split(":")
+            milvus_host = uri_parts[0]
+            milvus_port = uri_parts[1] if len(uri_parts) > 1 else "19530"
+        connections.connect(host=milvus_host, port=milvus_port)
+        print(f"    Milvus 连接耗时: {time.time() - milvus_start:.2f}秒")
 
         # 删除旧集合（如果存在）
         if utility.has_collection(COLLECTION_NAME):
@@ -162,17 +191,26 @@ def run_ingestion():
         print(f"❌ Milvus 连接失败：{e}")
         return
 
-    print(">>> 正在向量化并存入 Milvus...")
+    # 4. 向量化入库
+    print("\n" + "="*50)
+    print("[4/4] 向量化并存入 Milvus...")
+    vector_start = time.time()
     try:
         vector_store = Milvus.from_documents(
             documents=splits,
             embedding=embeddings,
-            connection_args={"uri": MILVUS_URI},
+            connection_args={"host": milvus_host, "port": milvus_port},
             collection_name=COLLECTION_NAME,
         )
-        print(">>> ✅ 入库完成！")
+        print(f"    向量化入库耗时: {time.time() - vector_start:.2f}秒")
     except Exception as e:
         print(f"❌ 入库失败：{e}")
+        return
+
+    # 总耗时
+    print("\n" + "="*50)
+    print(f"✅ 全部完成！总耗时: {time.time() - total_start:.2f}秒")
+    print("="*50)
 
 if __name__ == "__main__":
     run_ingestion()

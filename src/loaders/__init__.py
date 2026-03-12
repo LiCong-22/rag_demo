@@ -22,7 +22,8 @@ def get_loader(data_source: str = "local", **kwargs) -> BaseLoader:
 
     if data_source == "local":
         return LocalFileLoader(
-            data_path=kwargs.get("data_path", config.DATA_PATH)
+            data_path=kwargs.get("data_path", config.DATA_PATH),
+            file_types=kwargs.get("file_types", config.FILE_TYPES)
         )
     elif data_source == "confluence":
         return ConfluenceLoader_(
@@ -34,7 +35,7 @@ def get_loader(data_source: str = "local", **kwargs) -> BaseLoader:
     elif data_source == "all":
         # 返回加载器列表
         return [
-            LocalFileLoader(data_path=config.DATA_PATH),
+            LocalFileLoader(data_path=config.DATA_PATH, file_types=config.FILE_TYPES),
             ConfluenceLoader_(
                 url=config.CONFLUENCE_URL,
                 username=config.CONFLUENCE_USERNAME,

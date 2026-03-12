@@ -1,7 +1,6 @@
 # src/loaders/local.py
 import os
 from typing import List
-from langchain_community.document_loaders import TextLoader
 from langchain_core.documents import Document
 from .base import BaseLoader
 
@@ -20,6 +19,24 @@ class LocalFileLoader(BaseLoader):
         self.data_path = data_path
         self.file_types = file_types or ['.md', '.txt']
 
+    def _get_loader(self, file_path: str):
+        """根据文件扩展名选择合适的加载器"""
+        ext = os.path.splitext(file_path)[1].lower()
+
+        if ext == '.pdf':
+            from langchain_community.document_loaders import PyMuPDFLoader
+            return PyMuPDFLoader(file_path)
+        elif ext == '.docx':
+            from langchain_community.document_loaders import Docx2txtLoader
+            return Docx2txtLoader(file_path)
+        elif ext in ['.xlsx', '.xls']:
+            from langchain_community.document_loaders import UnstructuredExcelLoader
+            return UnstructuredExcelLoader(file_path)
+        else:
+            # 默认为 TextLoader (支持 .md, .txt 等)
+            from langchain_community.document_loaders import TextLoader
+            return TextLoader(file_path, encoding='utf-8')
+
     def load(self) -> List[Document]:
         """加载本地文件"""
         docs = []
@@ -32,7 +49,7 @@ class LocalFileLoader(BaseLoader):
                 if any(file.endswith(ext) for ext in self.file_types):
                     file_path = os.path.join(root, file)
                     try:
-                        loader = TextLoader(file_path, encoding='utf-8')
+                        loader = self._get_loader(file_path)
                         loaded_docs = loader.load()
                         # 添加source元数据
                         for d in loaded_docs:
