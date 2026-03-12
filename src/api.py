@@ -3,7 +3,7 @@ load_dotenv()
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from src.engine import engine, get_rag_config, set_rag_config
+from src.engine import engine, get_rag_config, set_rag_config, rag_agent
 
 app = FastAPI(title="AutoElec RAG API")
 
@@ -52,6 +52,23 @@ async def update_config(request: ConfigRequest):
         return new_config
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/agent")
+async def agent_query(request: QueryRequest):
+    """Agent 模式问答 - 自动判断使用 RAG 或搜索"""
+    try:
+        result = rag_agent.query(request.question)
+        answer = result["answer"]
+        if hasattr(answer, 'content'):
+            answer = answer.content
+        answer = str(answer)
+        thinking = result.get("thinking", "")
+        return QueryResponse(answer=answer, thinking=thinking, sources=result["sources"])
+    except Exception as e:
+        import traceback
+        error_msg = f"{str(e)}\n{traceback.format_exc()}"
+        print(f"❌ Agent 查询错误: {error_msg}")
+        raise HTTPException(status_code=500, detail=error_msg)
 
 @app.get("/health")
 async def health_check():

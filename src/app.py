@@ -57,6 +57,15 @@ with st.sidebar:
     # API 配置
     API_URL = st.text_input("API 地址", value="http://localhost:8000")
 
+    # 模式选择
+    st.subheader("🎯 问答模式")
+    query_mode = st.radio(
+        "选择问答模式",
+        ["RAG 模式", "Agent 模式"],
+        index=0,
+        help="RAG: 只查知识库\nAgent: 自动判断使用知识库/搜索/计算器"
+    )
+
     # 检索参数
     st.subheader("🔍 检索配置")
     top_k = st.slider("检索文档数量", 1, 10, 3)
@@ -156,12 +165,20 @@ if prompt := st.chat_input("请输入您的问题，例如：ESP 初始化失败
         message_placeholder.markdown("🤔 思考中...")
         
         try:
+            # 根据模式选择接口
+            if query_mode == "Agent 模式":
+                api_endpoint = f"{API_URL}/agent"
+                spinner_text = "Agent 正在思考中..."
+            else:
+                api_endpoint = f"{API_URL}/query"
+                spinner_text = "正在检索知识库并生成答案..."
+
             # 调用 API
-            with st.spinner("正在检索知识库并生成答案..."):
+            with st.spinner(spinner_text):
                 response = requests.post(
-                    f"{API_URL}/query",
+                    api_endpoint,
                     json={"question": prompt},
-                    timeout=60
+                    timeout=120
                 )
                 
                 if response.status_code == 200:
@@ -218,6 +235,8 @@ with col1:
     st.markdown("- 问题尽量具体明确")
     st.markdown("- 可以追问获取更多信息")
     st.markdown("- 点击来源查看原文档")
+    if query_mode == "Agent 模式":
+        st.markdown("- Agent 模式可使用：知识库检索、网页搜索、计算器、Python代码")
 with col2:
     st.markdown("**📊 系统统计**")
     st.markdown(f"- 对话轮数：{len(st.session_state.messages)//2}")

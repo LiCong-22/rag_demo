@@ -34,7 +34,8 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_SOURCE = "all"
 
 # ==================== 本地文件配置 ====================
-DATA_PATH = os.path.join(BASE_DIR, "data")
+DATA_PATH = os.path.join(BASE_DIR, "data/TEST")
+FILE_TYPES = ['.md', '.txt', '.pdf', '.docx', '.xlsx']
 
 # ==================== Confluence 配置 ====================
 CONFLUENCE_URL = os.getenv("CONFLUENCE_URL", "")
@@ -64,3 +65,10 @@ EXPANSION_COUNT = 3
 
 # 检索数量 (增大以容纳更多检索结果)
 RETRIEVAL_K = 8
+
+# ==================== Agent 配置 ====================
+# 是否启用 Agent 模式（自动判断使用 RAG 或搜索）
+ENABLE_AGENT = True
+
+# 是否启用网页搜索（如果网络不通可关闭）
+ENABLE_WEB_SEARCH = True

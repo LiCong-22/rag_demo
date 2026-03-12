@@ -18,7 +18,8 @@ from src.config import (
     ANTHROPIC_API_KEY, ANTHROPIC_MODEL, ANTHROPIC_BASE_URL,
     ENABLE_HYDE, ENABLE_QUERY_EXPANSION,
     EXPANSION_COUNT, RETRIEVAL_K,
-    ENABLE_PARENT_CHILD
+    ENABLE_PARENT_CHILD,
+    ENABLE_WEB_SEARCH
 )
 
 # ==================== 动态配置 ====================
@@ -454,4 +455,276 @@ class RAGEngine:
             "sources": [doc.page_content for doc in docs]
         }
 
+# ==================== RAG Agent ====================
+from langchain.tools import tool
+from langchain_community.tools import DuckDuckGoSearchRun
+from langchain.agents import create_agent
+
+
+class RAGAgent:
+    """RAG Agent - 结合知识库检索和实时搜索"""
+
+    def __init__(self):
+        # 复用现有 RAG Engine（已初始化 LLM）
+        self.rag_engine = engine
+        self._setup_tools()
+
+    def _setup_tools(self):
+        """设置 Agent Tools"""
+
+        @tool
+        def rag_search(query: str) -> str:
+            """
+            检索知识库中的相关信息。
+            当用户询问汽车电子、软件架构、技术细节等问题时使用。
+            """
+            result = self.rag_engine.hybrid_search(query)
+            return self._format_rag_result(result)
+
+        # 创建搜索工具（带异常处理）
+        from langchain_core.tools import StructuredTool
+
+        def safe_web_search(query: str) -> str:
+            """搜索互联网获取最新信息（带异常处理）"""
+            try:
+                tool = DuckDuckGoSearchRun()
+                return tool.run(query)
+            except Exception as e:
+                return f"搜索暂时不可用：{str(e)}。请尝试直接回答或使用知识库。"
+
+        # 构建工具列表
+        tools_list = [rag_search]
+
+        # 添加网页搜索（如果启用且可用）
+        if ENABLE_WEB_SEARCH:
+            try:
+                self.search_tool = StructuredTool.from_function(
+                    func=safe_web_search,
+                    name="web_search",
+                    description="搜索互联网获取最新信息。当用户询问最新新闻、技术动态等问题时使用。"
+                )
+                tools_list.append(self.search_tool)
+            except Exception:
+                print("    ⚠️ 网页搜索工具加载失败")
+
+        # 添加本地工具（不需要网络）
+        @tool
+        def calculator(expression: str) -> str:
+            """
+            计算数学表达式。
+            当用户询问计算问题时使用，例如：2+3*4, 100/7, sqrt(16)等。
+            """
+            try:
+                import math
+                # 安全地计算表达式
+                allowed_names = {
+                    "abs": abs, "max": max, "min": min, "pow": pow,
+                    "round": round, "sum": sum, "len": len,
+                    "sqrt": math.sqrt, "sin": math.sin, "cos": math.cos,
+                    "tan": math.tan, "log": math.log, "log10": math.log10,
+                    "pi": math.pi, "e": math.e
+                }
+                result = eval(expression, {"__builtins__": {}}, allowed_names)
+                return str(result)
+            except Exception as e:
+                return f"计算错误：{str(e)}"
+
+        @tool
+        def python_repl(code: str) -> str:
+            """
+            执行 Python 代码。
+            当用户要求编写或运行代码时使用。
+            """
+            try:
+                import sys
+                from io import StringIO
+
+                # 捕获输出
+                old_stdout = sys.stdout
+                sys.stdout = StringIO()
+
+                # 执行代码
+                exec(code, {"__builtins__": __builtins__})
+
+                # 获取输出
+                output = sys.stdout.getvalue()
+                sys.stdout = old_stdout
+
+                return output if output else "代码执行完成（无输出）"
+            except Exception as e:
+                return f"执行错误：{str(e)}"
+
+        @tool
+        def read_file(file_path: str) -> str:
+            """
+            读取本地文件内容。
+            当用户询问需要查看某个文件的内容时使用。
+            注意：只读文件，不要尝试执行或修改。
+            """
+            import os
+            from pathlib import Path
+
+            # 安全检查：禁止读取敏感路径
+            forbidden_paths = [
+                "/etc/", "/usr/bin/", "/usr/sbin/",
+                "C:\\Windows", "C:\\Program Files",
+                "C:\\Users\\Admin\\AppData"
+            ]
+
+            abs_path = os.path.abspath(file_path)
+
+            # 检查是否包含禁止路径
+            for forbidden in forbidden_paths:
+                if forbidden in abs_path:
+                    return f"错误：禁止访问系统目录 {forbidden}"
+
+            # 检查文件是否存在
+            if not os.path.exists(abs_path):
+                return f"错误：文件不存在: {file_path}"
+
+            # 检查是否是文件
+            if not os.path.isfile(abs_path):
+                return f"错误：不是文件: {file_path}"
+
+            # 限制文件大小 (最大 1MB)
+            file_size = os.path.getsize(abs_path)
+            if file_size > 1024 * 1024:
+                return f"错误：文件太大 ({file_size} bytes)，最大支持 1MB"
+
+            # 限制文件类型（只允许文本文件）
+            allowed_extensions = ['.txt', '.md', '.py', '.js', '.json', '.yaml', '.yml', '.xml', '.csv', '.log', '.conf', '.cfg', '.ini', '.html', '.css', '.sql', '.sh', '.bat', '.ps1']
+            ext = Path(file_path).suffix.lower()
+            if ext not in allowed_extensions:
+                return f"错误：不支持的文件类型: {ext}，只允许: {', '.join(allowed_extensions)}"
+
+            try:
+                with open(abs_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                return f"文件: {file_path}\n内容:\n{content}"
+            except UnicodeDecodeError:
+                # 尝试其他编码
+                try:
+                    with open(abs_path, 'r', encoding='gbk') as f:
+                        content = f.read()
+                    return f"文件: {file_path}\n内容:\n{content}"
+                except Exception as e:
+                    return f"错误：无法读取文件编码: {str(e)}"
+            except Exception as e:
+                return f"错误：读取失败: {str(e)}"
+
+        tools_list.append(python_repl)
+        tools_list.append(calculator)
+        tools_list.append(read_file)
+
+        self.tools = tools_list
+
+    def _format_rag_result(self, result):
+        """格式化 RAG 结果"""
+        if not result:
+            return "知识库中未找到相关信息"
+        if isinstance(result, list):
+            if not result:
+                return "知识库中未找到相关信息"
+            context = "\n\n".join(doc.page_content for doc in result)
+            sources = [doc.page_content[:200] + "..." for doc in result]
+            return f"知识库检索结果：\n{context}\n\n来源：{sources}"
+        return str(result)
+
+    def query(self, question: str) -> dict:
+        """Agent 对话入口 - 复用现有 LLM 配置"""
+        import json
+
+        # 使用 RAG Engine 中已初始化的 LLM
+        llm = self.rag_engine.llm
+
+        # 创建 Agent (使用 langchain 0.3.x 新 API)
+        agent = create_agent(llm, self.tools)
+
+        print(f"\n{'='*60}")
+        print(f">>> 🤖 Agent 开始处理问题: {question}")
+        print(f">>> 🛠️ 可用工具: {[t.name for t in self.tools]}")
+        print(f"{'='*60}\n")
+
+        # 执行（使用 stream 模式获取中间步骤）
+        result = agent.invoke({"messages": [("user", question)]})
+
+        # 解析 Agent 返回的消息
+        messages = result.get("messages", [])
+
+        # 打印 Agent 执行过程
+        print(f"\n{'='*60}")
+        print(">>> 📋 Agent 执行过程:")
+        print(f"{'='*60}")
+
+        # 提取思考过程和最终回答
+        thinking_parts = []
+        final_answer = ""
+        tool_calls = []
+
+        for i, msg in enumerate(messages):
+            msg_type = getattr(msg, 'type', 'unknown')
+            print(f"\n--- 步骤 {i}: {msg_type} ---")
+
+            # 处理不同格式的消息
+            if msg_type == 'human':
+                print(f"用户问题: {getattr(msg, 'content', '')}")
+                continue
+            elif msg_type == 'ai':
+                # AI 消息，可能是思考或最终回答
+                if hasattr(msg, 'content'):
+                    content = msg.content
+                    if isinstance(content, list):
+                        for item in content:
+                            if isinstance(item, dict):
+                                item_type = item.get('type', '')
+                                if item_type == 'thinking':
+                                    thinking = item.get('text', '')
+                                    print(f"💭 思考: {thinking[:200]}...")
+                                    thinking_parts.append(thinking)
+                                elif item_type == 'text':
+                                    text = item.get('text', '')
+                                    print(f"📝 文本: {text[:200]}...")
+                                    final_answer = text
+                                elif item_type == 'tool_use':
+                                    tool_name = item.get('name', '')
+                                    tool_input = item.get('input', '')
+                                    print(f"🔧 调用工具: {tool_name}")
+                                    print(f"   输入: {str(tool_input)[:200]}...")
+                                    tool_calls.append({"tool": tool_name, "input": tool_input})
+                            else:
+                                # 可能是最终回答
+                                final_answer = str(item)
+                    elif isinstance(content, str):
+                        print(f"📝 文本: {content[:200]}...")
+                        final_answer = content
+
+                # 打印工具调用
+                if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                    for tc in msg.tool_calls:
+                        print(f"🔧 调用工具: {tc.get('name', 'unknown')}")
+                        print(f"   输入: {str(tc.get('args', {}))[:200]}...")
+
+            elif msg_type == 'tool':
+                # 工具返回结果
+                if hasattr(msg, 'content'):
+                    print(f"📤 工具返回: {str(msg.content)[:200]}...")
+
+        print(f"\n{'='*60}")
+        print(">>> ✅ Agent 执行完成")
+        print(f"{'='*60}\n")
+
+        # 合并思考过程
+        thinking = "\n".join(thinking_parts)
+
+        return {
+            "answer": final_answer,
+            "thinking": thinking,
+            "sources": []
+        }
+
+
+# 保留原有的 engine 实例
 engine = RAGEngine()
+
+# 全局 RAG Agent 实例（在 engine 初始化后）
+rag_agent = RAGAgent()
